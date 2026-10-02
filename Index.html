@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cuttlefish Remote Controller</title>
+    <style>
+        body {font-family:system-ui;padding:16px;color:#222;background:#f5f7fa;}
+        button {padding:12px 20px;margin:6px;font-size:17px;cursor:pointer;}
+        button:disabled {opacity:0.4;cursor:not-allowed;}
+        .logbox {background:#000;color:#3f3;padding:12px;margin-top:12px;height:240px;overflow:auto;font-family:monospace;}
+        .count {font-size:22px;font-weight:bold;color:#d22;margin:8px 0;}
+    </style>
+</head>
+<body>
+    <h2>Cuttlefish Android VM Remote Control</h2>
+    <p>Select Android Version:
+        <select id="androidVer">
+            <option value="android13">Android 13</option>
+            <option value="android14">Android 14</option>
+            <option value="android15">Android 15</option>
+            <option value="android16">Android 16</option>
+            <option value="android17">Android 17</option>
+        </select>
+    </p>
+
+    <button id="btnStart" onclick="runStart()">Start Download</button>
+    <button id="btnBoot" disabled onclick="runBoot()">Boot VM</button>
+    <button id="btnStop" onclick="stopVM()">Stop VM</button>
+    <div class="count" id="countText"></div>
+    <div class="logbox" id="serverLog">Ready. Tap Start Download to begin.</div>
+
+<script>
+// C++ code embedded inside HTML as plain text string, hidden from display
+const CPP_SOURCE = `
+#include <iostream>
+#include <string>
+#include <cstdlib>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <sstream>
+
+const int PORT = 8877;
+
+std::string getDownloadCmd(const std::string& version) {
+    if(version == "android13")
+        return "mkdir -p cuttlefish-android13 && cd cuttlefish-android13 && wget https://ci.android.com/builds/latest/branches/android13-release/targets/aosp_cf_arm64_only_phone-eng/artifacts.zip && unzip -o artifacts.zip";
+    if(version == "android14")
+        return "mkdir -p cuttlefish-android14 && cd cuttlefish-android14 && wget https://ci.android.com/builds/latest/branches/android14-release/targets/aosp_cf_arm64_only_phone-eng/artifacts.zip && unzip -o artifacts.zip";
+    if(version == "android15")
+        return "mkdir -p cuttlefish-android15 && cd cuttlefish-android15 && wget https://ci.android.com/builds/latest/branches/android15-release/targets/aosp_cf_arm64_only_phone-eng/artifacts.zip && unzip -o artifacts.zip";
+    if(version == "android16")
+        return "mkdir -p cuttlefish-android16 && cd cuttlefish-android16 && wget https://ci.android.com/builds/latest/branches/android16-release/targets/aosp_cf_arm64_only_phone-eng/artifacts.zip && unzip -o artifacts.zip";
+    if(version == "android17")
+        return "mkdir -p cuttlefish-android17 && cd cuttlefish-android17 && wget https://ci.android.com/builds/latest/branches/android17-release/targets/aosp_cf_arm64_only_phone-eng/artifacts.zip && unzip -o artifacts.zip";
+    return "";
+}
+
+int main() {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+    bind(server_fd, (struct sockaddr*)&address, sizeof(address));
+    listen(server_fd, 5);
+    std::cout << "Cuttlefish Backend running on port " << PORT << "\\n";
+
+    while(true) {
+        socklen_t addrLen = sizeof(address);
+        int clientSocket = accept(server_fd, (struct sockaddr*)&address, &addrLen);
+        char buffer[1024] = {0};
+        read(clientSocket, buffer, 1024);
+        std::string cmd(buffer);
+        std::string logText;
+
+        if(cmd.rfind("start:",0)==0) {
+            std::string ver = cmd.substr(6);
+            std::cout << "Server downloading " << ver << "\\n";
+            std::string dlCmd = getDownloadCmd(ver);
+            system(dlCmd.c_str());
+            logText = "Download complete on server, ready for boot";
+        } else if(cmd.rfind("boot:",0)==0) {
+            system("launch_cvd --daemon");
+            logText = "✅ Android VM Booting";
+        } else if(cmd.rfind("stop",0)==0) {
+            system("stop_cvd");
+            logText = "🛑 VM stopped";
+        } else {
+            logText = "❌ Unknown command";
+        }
+        send(clientSocket, logText.c_str(), logText.length(),0);
+        close(clientSocket);
+    }
+    close(server_fd);
+    return 0;
+}
+`;
+
+// ========= Replace this after you get your Linux server public IP =========
+const SERVER_IP = "YOUR_SERVER_PUBLIC_IP";
+const SERVER_PORT = 8877;
+
+const logBox = document.getElementById("serverLog");
+const btnStart = document.getElementById("btnStart");
+const btnBoot = document.getElementById("btnBoot");
+const countText = document.getElementById("countText");
+
+async function runStart() {
+    btnStart.disabled = true;
+    const ver = document.getElementById("androidVer").value;
+    logBox.innerText = "Sending start command to Linux server...";
+    
+    try {
+        const res = await fetch(`http://${SERVER_IP}:${SERVER_PORT}/?cmd=start:${ver}`);
+        const msg = await res.text();
+        logBox.innerText = msg;
+    } catch(err) {
+        logBox.innerText = "Connection error: Check server firewall & IP";
+    }
+
+    // 10 second countdown to unlock Boot button
+    let timer = 10;
+    countText.innerText = `Wait ${timer}s before Boot`;
+    const cd = setInterval(()=>{
+        timer--;
+        countText.innerText = `Wait ${timer}s before Boot`;
+        if(timer <= 0) {
+            clearInterval(cd);
+            countText.innerText = "✅ Boot button available now";
+            btnBoot.disabled = false;
+        }
+    },1000);
+}
+
+async function runBoot() {
+    btnBoot.disabled = true;
+    const ver = document.getElementById("androidVer").value;
+    logBox.innerText = "Booting Android VM, wait 10 seconds to load fully...";
+    let timer =10;
+    countText.innerText = `Loading VM: ${timer}s remaining`;
+    const cd = setInterval(()=>{
+        timer--;
+        countText.innerText = `Loading VM: ${timer}s remaining`;
+        if(timer <=0) {
+            clearInterval(cd);
+            countText.innerText = "🎉 Android VM fully loaded, jumping to React screen";
+            logBox.innerText = "Android " + ver + " ready on remote server, redirecting...";
+            // Open Cuttlefish React viewer page
+            window.open(`https://${SERVER_IP}:8443`, "_blank");
+        }
+    },1000);
+    await fetch(`http://${SERVER_IP}:${SERVER_PORT}/?cmd=boot:${ver}`);
+}
+
+async function stopVM(){
+    try{
+        const res = await fetch(`http://${SERVER_IP}:${SERVER_PORT}/?cmd=stop`);
+        const msg = await res.text();
+        logBox.innerText = msg;
+    }catch(err){
+        logBox.innerText = "Failed to send stop command";
+    }
+}
+</script>
+</body>
+</html>
